@@ -3,31 +3,44 @@ CS/ME/ECE/AE/BME 7785 · Georgia Institute of Technology
 
 ---
 
+## How this relates to Lab 1
+
+Your Lab 1 `find_object.py` detected an object from a **webcam**.  
+Lab 2 takes that same detection logic and wraps it in **two ROS2 nodes**:
+
+| | Lab 1 | Lab 2 |
+|---|---|---|
+| Image source | Webcam (`cv2.VideoCapture`) | TurtleBot camera (`/image_raw/compressed`) |
+| Output | Prints `sx sy` to terminal, shows window | Publishes `Point` to `/object_coord` |
+| Robot control | None | `rotate_robot` node reads `/object_coord` → publishes to `/cmd_vel` |
+
+The `HSVRange`, `Calibrator`, `build_mask`, `detect_largest_blob`, `ema_smooth` functions are **identical** to Lab 1.
+
+---
+
 ## Folder Structure
 
 ```
-lab2_repo/                          ← root of your GitHub repo
+lab2_repo/                               ← root of your GitHub repo
 ├── .gitignore
 ├── README.md
-└── team1_object_follower/          ← ROS2 package (this whole folder is the package)
-    ├── package.xml
-    ├── setup.py
+└── team1_object_follower/               ← the ROS2 package
+    ├── package.xml                      ← ROS2 metadata
+    ├── setup.py                         ← entry points (how ros2 run finds your nodes)
     ├── setup.cfg
     ├── resource/
-    │   └── team1_object_follower   ← empty marker file, required by ROS2
+    │   └── team1_object_follower        ← empty marker file, required by ROS2
     ├── launch/
-    │   └── object_follower.launch.py
-    └── team1_object_follower/      ← Python module (same name as package)
-        ├── __init__.py
-        ├── find_object.py          ← detects object, publishes /object_coord
-        └── rotate_robot.py         ← reads /object_coord, publishes /cmd_vel
+    │   └── object_follower.launch.py    ← starts both nodes at once
+    └── team1_object_follower/           ← Python module (same name as package)
+        ├── __init__.py                  ← empty, must exist
+        ├── find_object.py               ← Lab 1 logic + ROS2 subscriber/publisher
+        └── rotate_robot.py              ← reads /object_coord, drives /cmd_vel
 ```
 
 ---
 
-## Step 1 — Put it on GitHub
-
-On your Ubuntu laptop:
+## Step 1 — Push to GitHub (on your Ubuntu laptop)
 
 ```bash
 cd lab2_repo
@@ -35,25 +48,20 @@ git init
 git add .
 git commit -m "Lab 2 initial commit"
 
-# Create a new repo on github.com, then:
-git remote add origin https://github.com/YOUR_USERNAME/lab2_object_follower.git
+# Create a new EMPTY repo on github.com, then:
+git remote add origin https://github.com/YOUR_USERNAME/lab2_repo.git
 git push -u origin main
 ```
 
 ---
 
-## Step 2 — Clone onto your Ubuntu laptop
+## Step 2 — Clone to your Ubuntu laptop workspace
 
 ```bash
 cd ~/ros2_ws/src
-git clone https://github.com/YOUR_USERNAME/lab2_object_follower.git
+git clone https://github.com/YOUR_USERNAME/lab2_repo.git
 
-# This gives you:
-# ~/ros2_ws/src/lab2_object_follower/team1_object_follower/
-```
-
-Build it:
-```bash
+# Build
 cd ~/ros2_ws
 colcon build --packages-select team1_object_follower
 source install/setup.bash
@@ -61,36 +69,47 @@ source install/setup.bash
 
 ---
 
-## Step 3 — Calibrate HSV for your object (on your laptop first)
+## Step 3 — Test on your laptop first (before touching the robot)
 
-Before running on the robot, figure out the correct HSV range for your object.
+Your laptop doesn't have the TurtleBot camera, but you can still test that
+the nodes start and talk to each other correctly.
 
-Run the standalone Lab 1 `find_object.py` on your laptop with your webcam:
+**Terminal 1** — start find_object (it will just wait for images):
 ```bash
-python3 find_object.py
-```
-- A window opens showing your webcam feed
-- **Click on your object** — the terminal prints the HSV lo/hi values
-- Note down the numbers (e.g. `lo=(100, 80, 50)  hi=(130, 255, 255)`)
-
-Then open `team1_object_follower/find_object.py` and update `DEFAULT_HSV_RANGES`:
-```python
-DEFAULT_HSV_RANGES = [
-    HSVRange(lo=np.array([100, 80,  50], dtype=np.uint8),   # ← your values
-             hi=np.array([130, 255, 255], dtype=np.uint8)),
-]
+source ~/ros2_ws/install/setup.bash
+ros2 run team1_object_follower find_object
 ```
 
-Commit and push:
+**Terminal 2** — check the topic exists:
 ```bash
-git add .
-git commit -m "Calibrate HSV for my object"
-git push
+ros2 topic list
+# You should see /object_coord in the list
 ```
+
+**Terminal 3** — start rotate_robot and watch it respond:
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 run team1_object_follower rotate_robot
+```
+
+**Terminal 4** — manually publish a fake coordinate to test rotation logic:
+```bash
+# Simulate object on the RIGHT (x=250 on a 320-wide frame, center=160)
+ros2 topic pub /object_coord geometry_msgs/msg/Point "{x: 250.0, y: 120.0, z: 1000.0}"
+
+# Simulate object on the LEFT
+ros2 topic pub /object_coord geometry_msgs/msg/Point "{x: 50.0, y: 120.0, z: 1000.0}"
+
+# Simulate no object found
+ros2 topic pub /object_coord geometry_msgs/msg/Point "{x: -1.0, y: -1.0, z: -1.0}"
+```
+
+Watch Terminal 3 — you should see `rotate_robot` log which direction it would turn.
+The robot won't actually move (no robot connected) but the logic is verified.
 
 ---
 
-## Step 4 — Clone onto the TurtleBot3
+## Step 4 — Clone to the TurtleBot3
 
 SSH into the robot:
 ```bash
@@ -100,51 +119,66 @@ ssh burger@<ROBOT_IP>
 On the robot:
 ```bash
 cd ~/ros2_ws/src
-git clone https://github.com/YOUR_USERNAME/lab2_object_follower.git
+git clone https://github.com/YOUR_USERNAME/lab2_repo.git
 
 cd ~/ros2_ws
 colcon build --packages-select team1_object_follower
 source install/setup.bash
-```
 
-> **Tip:** Add `source ~/ros2_ws/install/setup.bash` to the robot's `~/.bashrc`
-> so you don't have to source it every time.
+# Optional: add to .bashrc so you don't need to source every time
+echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
+```
 
 ---
 
-## Step 5 — Run it
+## Step 5 — Run on the robot
 
-You need **3 terminals on the robot** (open via SSH from your laptop).
+You need **2 SSH terminals into the robot**.
 
-### Terminal 1 — Start the camera
+**Terminal 1** — start the camera + robot bringup:
 ```bash
 ros2 launch turtlebot3_bringup camera_robot.launch.py
 ```
 
-### Terminal 2 — Launch both nodes at once
+**Terminal 2** — launch both your nodes:
 ```bash
 ros2 launch team1_object_follower object_follower.launch.py
 ```
 
-That's it! The robot will now rotate to follow your object.
+The robot will now rotate toward your object.
 
 ---
 
-## Step 6 — Watch the debug image on your laptop (optional)
+## Step 6 — View the debug image on your laptop (optional)
 
-Install the image transport plugin if not already done:
+Install transport plugin if not already done (on your laptop):
 ```bash
 sudo apt-get install ros-humble-image-transport-plugins
 ```
 
-Open a terminal on your **laptop** (not the robot):
 ```bash
-# Make sure ROS_DOMAIN_ID matches the robot, then:
 rqt_image_view
+# Select topic: /find_object/compressed
+# You'll see the live annotated camera feed from the robot
 ```
-Select topic: `/find_object/compressed`
 
-You'll see the live annotated camera feed showing where the object was detected.
+---
+
+## Step 7 — Updating code (the git workflow)
+
+```bash
+# On your laptop — edit code, then push
+git add .
+git commit -m "describe your change"
+git push
+
+# On the robot — pull and rebuild
+cd ~/ros2_ws/src/lab2_repo
+git pull
+cd ~/ros2_ws
+colcon build --packages-select team1_object_follower
+source install/setup.bash
+```
 
 ---
 
@@ -152,28 +186,25 @@ You'll see the live annotated camera feed showing where the object was detected.
 
 | Problem | Fix |
 |---|---|
-| `Package not found` after build | Run `source ~/ros2_ws/install/setup.bash` |
-| Robot doesn't move | Check `/object_coord` is publishing: `ros2 topic echo /object_coord` |
-| Object never detected (x=-1 always) | HSV range is wrong — redo calibration |
-| Robot oscillates / twitches | Increase `dead_band` to `0.15` or decrease `angular_speed` to `0.3` |
-| Very slow to react | Both nodes must run ON the robot, not your laptop |
-| Camera topic not found | Run `ros2 topic list` and check camera is up |
+| `Package not found` | Run `source ~/ros2_ws/install/setup.bash` |
+| Robot doesn't turn | Check `/object_coord` is publishing: `ros2 topic echo /object_coord` |
+| Object never detected (`x: -1`) | HSV range is wrong — click on the object in the debug window to recalibrate |
+| Robot oscillates | Increase `dead_band` to `0.15`, or decrease `angular_speed` to `0.3` |
+| Very laggy | Both nodes must run **on the robot**, not your laptop |
 
 ---
 
-## Tuning Parameters
+## Topic Map
 
-Pass overrides to the launch file like this:
-```bash
-ros2 launch team1_object_follower object_follower.launch.py angular_speed:=0.5 dead_band:=0.12
 ```
-
-| Parameter | Default | What it does |
-|---|---|---|
-| `image_width` | `320` | Must match camera resolution |
-| `dead_band` | `0.10` | ±10% of frame width = "centered enough" → stop turning |
-| `angular_speed` | `0.4` | Base turn speed (rad/s) |
-| `max_angular` | `0.8` | Max turn speed cap |
-| `proportional` | `True` | Smooth P-control vs bang-bang |
-| `min_area` | `900.0` | Min blob size to count as detection |
-| `show_debug` | `True` | Publish annotated debug image |
+[camera_robot.launch]
+        │  /image_raw/compressed  (CompressedImage)
+        ▼
+[find_object node]  ──►  /find_object/compressed  (debug image → laptop)
+        │  /object_coord  (Point: x=col, y=row, z=area or z=-1 if not found)
+        ▼
+[rotate_robot node]
+        │  /cmd_vel  (Twist: only angular.z, no linear)
+        ▼
+[robot motors]
+```
