@@ -90,68 +90,51 @@ class GetObjectRangeNode(Node):
 
     def _fuse_and_publish(self):
         result = Point()
-
-        # If either sensor has no data yet, or object not found → publish not-found
+    
         if self._scan is None or self._camera_angle == NOT_FOUND:
             result.x = 0.0
-            result.y = 0.0
-            result.z = -1.0   # sentinel: no valid data
-            self._range_pub.publish(result)
-            return
-
-        scan          = self._scan
-        camera_angle  = self._camera_angle   # radians, + = right of camera center
-
-        # ── Convert camera angle to LIDAR index ──────────────────────────────
-        # LIDAR angle convention: 0 = forward, increases counter-clockwise
-        # Camera convention:      0 = forward, positive = right
-        # So: lidar_angle = -camera_angle
-        lidar_angle = -camera_angle
-
-        # Clamp to valid LIDAR range
-        lidar_angle = max(scan.angle_min,
-                          min(scan.angle_max, lidar_angle))
-
-        # Compute the center index
-        center_idx = int(round(
-            (lidar_angle - scan.angle_min) / scan.angle_increment
-        ))
-        center_idx = max(0, min(len(scan.ranges) - 1, center_idx))
-
-        # ── Average a window of beams around the center index ─────────────────
-        # This smooths out any single-beam noise or spurious inf/nan readings
-        w = self._window
-        idx_lo = max(0, center_idx - w)
-        idx_hi = min(len(scan.ranges) - 1, center_idx + w)
-
-        beams = []
-        for i in range(idx_lo, idx_hi + 1):
-            r = scan.ranges[i]
-            # Filter out invalid readings (inf, nan, out of range)
-            if (math.isfinite(r) and
-                    scan.range_min <= r <= scan.range_max):
-                beams.append(r)
-
-        if not beams:
-            # No valid LIDAR reading at this angle → publish not-found
-            result.x = float(camera_angle)
             result.y = 0.0
             result.z = -1.0
             self._range_pub.publish(result)
             return
-
-        distance = float(np.median(beams))   # median is more robust than mean
-
-        # ── Publish result ────────────────────────────────────────────────────
-        result.x = float(camera_angle)   # angular error (rad), + = object right
-        result.y = distance              # distance in meters
-        result.z = 0.0                   # 0 = valid reading
-
+    
+        scan         = self._scan
+        camera_angle = self._camera_angle
+    
+        lidar_angle = -camera_angle
+        lidar_angle = max(scan.angle_min, min(scan.angle_max, lidar_angle))
+    
+        center_idx = int(round(
+            (lidar_angle - scan.angle_min) / scan.angle_increment
+        ))
+        center_idx = max(0, min(len(scan.ranges) - 1, center_idx))
+    
+        # ── Wider window + max distance filter ───────────────────────────────────
+        w = self._window
+        idx_lo = max(0, center_idx - w)
+        idx_hi = min(len(scan.ranges) - 1, center_idx + w)
+    
+        beams = []
+        for i in range(idx_lo, idx_hi + 1):
+            r = scan.ranges[i]
+            if (math.isfinite(r) and
+                    scan.range_min <= r <= scan.range_max and
+                    r < 3.0):   # ← ignore anything further than 3 meters
+                beams.append(r)
+    
+        if not beams:
+            result.x = float(camera_angle)
+            result.y = 0.0
+            result.z = -1.0   # no valid reading → stop
+            self._range_pub.publish(result)
+            return
+    
+        distance = float(np.median(beams))
+    
+        result.x = float(camera_angle)
+        result.y = distance
+        result.z = 0.0
         self._range_pub.publish(result)
-
-        self.get_logger().debug(
-            f'angle={math.degrees(camera_angle):.1f}deg  '
-            f'distance={distance:.3f}m  beams_used={len(beams)}')
 
 
 def main(args=None):
