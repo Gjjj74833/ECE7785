@@ -151,7 +151,7 @@ class ChaseObjectNode(Node):
 
         ang_error = msg.x                          # radians, + = object is RIGHT
         distance  = msg.y                          # meters
-        lin_error = self._desired_dist - distance  # + = too far, - = too close
+        lin_error = distance - self._desired_dist  # + = too far, - = too close
 
         # ── Angular control ───────────────────────────────────────────────────
         if abs(ang_error) > self._ang_dead:
