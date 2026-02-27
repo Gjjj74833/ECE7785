@@ -43,16 +43,16 @@ class GetObjectRangeNode(Node):
         super().__init__('get_object_range')
 
         # How many LIDAR beams on each side of the camera angle to average
-        # Averaging reduces noise from a single noisy beam
-        self.declare_parameter('lidar_window', 3)
+        self.declare_parameter('lidar_window', 8)
 
         self._window = self.get_parameter('lidar_window').value
 
         # Store latest data from each sensor
-        self._camera_angle: float = NOT_FOUND   # radians, from detect_object
+        self._camera_angle: float = NOT_FOUND
         self._scan: LaserScan     = None
+        self._last_distance       = 0.5   # last known good distance (meters)
 
-        # QoS for LIDAR (BEST_EFFORT like camera)
+        # QoS for LIDAR
         sensor_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -60,20 +60,16 @@ class GetObjectRangeNode(Node):
             depth=1,
         )
 
-        # Subscribe to camera angle from detect_object
         self._angle_sub = self.create_subscription(
             Float32, '/object_angle',
             self._angle_callback, 10)
 
-        # Subscribe to LIDAR scan
         self._scan_sub = self.create_subscription(
             LaserScan, '/scan',
             self._scan_callback, sensor_qos)
 
-        # Publish fused result to chase_object
         self._range_pub = self.create_publisher(Point, '/object_range', 10)
 
-        # Process at 10 Hz using a timer rather than being purely callback-driven
         self._timer = self.create_timer(0.1, self._fuse_and_publish)
 
         self.get_logger().info('get_object_range node ready.')
@@ -90,51 +86,65 @@ class GetObjectRangeNode(Node):
 
     def _fuse_and_publish(self):
         result = Point()
-    
+
+        # No sensor data yet or object not detected → stop robot
         if self._scan is None or self._camera_angle == NOT_FOUND:
             result.x = 0.0
             result.y = 0.0
             result.z = -1.0
             self._range_pub.publish(result)
             return
-    
+
         scan         = self._scan
         camera_angle = self._camera_angle
-    
+
+        # Convert camera angle to LIDAR angle (flip sign)
         lidar_angle = -camera_angle
         lidar_angle = max(scan.angle_min, min(scan.angle_max, lidar_angle))
-    
+
+        # Compute center LIDAR index
         center_idx = int(round(
             (lidar_angle - scan.angle_min) / scan.angle_increment
         ))
         center_idx = max(0, min(len(scan.ranges) - 1, center_idx))
-    
-        # ── Wider window + max distance filter ───────────────────────────────────
-        w = self._window
+
+        # Average window of beams around center index
+        w      = self._window
         idx_lo = max(0, center_idx - w)
         idx_hi = min(len(scan.ranges) - 1, center_idx + w)
-    
+
         beams = []
         for i in range(idx_lo, idx_hi + 1):
             r = scan.ranges[i]
+            # Filter: must be finite, within sensor range, and under 5m
+            # (anything over 5m is a wall, not the object)
             if (math.isfinite(r) and
                     scan.range_min <= r <= scan.range_max and
-                    r < 3.0):   # ← ignore anything further than 3 meters
+                    r < 5.0):
                 beams.append(r)
-    
+
         if not beams:
+            # No valid beams — use last known good distance instead of stopping
+            # This prevents the robot from freezing when LIDAR briefly loses object
             result.x = float(camera_angle)
-            result.y = 0.0
-            result.z = -1.0   # no valid reading → stop
+            result.y = self._last_distance
+            result.z = 0.0
             self._range_pub.publish(result)
             return
-    
+
         distance = float(np.median(beams))
-    
+
+        # Save for fallback use above
+        self._last_distance = distance
+
         result.x = float(camera_angle)
         result.y = distance
         result.z = 0.0
         self._range_pub.publish(result)
+
+        self.get_logger().debug(
+            f'angle={math.degrees(camera_angle):.1f}deg  '
+            f'distance={distance:.3f}m  beams_used={len(beams)}')
 
 
 def main(args=None):
